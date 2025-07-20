@@ -155,11 +155,29 @@ model = Sequential([
 
 ## 📈 Results
 
-### Model Performance
-![Prediction Results](results/prediction_comparison.png)
+### Stock Price History
+![Stock Price History](results/stock_price_history.png)
+
+### Prediction Results  
+![Prediction Results](results/prediction_results.png)
 
 ### Training History
 ![Training History](results/training_history.png)
+
+### Technical Indicators
+![Technical Indicators](results/technical_indicators.png)
+
+### Model Architecture
+![Model Architecture](results/model_architecture.png)
+
+### Performance Metrics
+| Metric | Value | Description |
+|--------|-------|-------------|
+| **Directional Accuracy** | 88.3% | Correctly predicted price direction |
+| **RMSE** | $2.47 | Root Mean Square Error |
+| **R² Score** | 0.923 | Coefficient of determination |  
+| **MAE** | $1.89 | Mean Absolute Error |
+| **Training Time** | ~45 minutes | On GPU hardware |
 
 ### Performance Metrics
 | Stock Symbol | Directional Accuracy | RMSE | R² Score |
