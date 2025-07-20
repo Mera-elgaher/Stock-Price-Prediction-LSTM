@@ -2,16 +2,21 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 import warnings
 warnings.filterwarnings('ignore')
+
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
+    from tensorflow.keras.optimizers import Adam
+    from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+    TF_AVAILABLE = True
+except ImportError:
+    print("⚠️ TensorFlow not installed. Model training will not be available.")
+    TF_AVAILABLE = False
 
 class StockPricePredictor:
     def __init__(self, symbol='AAPL', period='5y'):
@@ -49,6 +54,10 @@ class StockPricePredictor:
     
     def add_technical_indicators(self):
         """Add technical indicators as features"""
+        if self.data is None:
+            print("❌ No data available. Fetch data first.")
+            return None
+            
         df = self.data.copy()
         
         # Moving averages
@@ -60,7 +69,6 @@ class StockPricePredictor:
         # MACD
         df['MACD'] = df['EMA_12'] - df['EMA_26']
         df['MACD_signal'] = df['MACD'].ewm(span=9).mean()
-        df['MACD_histogram'] = df['MACD'] - df['MACD_signal']
         
         # RSI
         delta = df['Close'].diff()
@@ -69,45 +77,35 @@ class StockPricePredictor:
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
-        # Bollinger Bands
-        df['BB_middle'] = df['Close'].rolling(window=20).mean()
-        bb_std = df['Close'].rolling(window=20).std()
-        df['BB_upper'] = df['BB_middle'] + (bb_std * 2)
-        df['BB_lower'] = df['BB_middle'] - (bb_std * 2)
-        df['BB_width'] = df['BB_upper'] - df['BB_lower']
-        df['BB_position'] = (df['Close'] - df['BB_lower']) / df['BB_width']
-        
         # Volatility
         df['Volatility'] = df['Close'].rolling(window=10).std()
         
         # Price changes
         df['Price_Change'] = df['Close'].pct_change()
-        df['High_Low_Pct'] = (df['High'] - df['Low']) / df['Close']
-        
-        # Volume indicators
-        df['Volume_SMA'] = df['Volume'].rolling(window=20).mean()
-        df['Volume_ratio'] = df['Volume'] / df['Volume_SMA']
         
         self.data = df
         return df
     
     def prepare_data(self, target_column='Close', test_size=0.2):
         """Prepare data for LSTM training"""
+        if not TF_AVAILABLE:
+            print("❌ TensorFlow not available. Cannot prepare data for training.")
+            return None, None, None, None
+            
         print("🔧 Preparing data for training...")
         
         # Add technical indicators
         self.add_technical_indicators()
         
         # Select features
-        feature_columns = [
-            'Open', 'High', 'Low', 'Close', 'Volume',
-            'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26',
-            'MACD', 'MACD_signal', 'RSI', 'BB_position',
-            'Volatility', 'Price_Change', 'High_Low_Pct', 'Volume_ratio'
-        ]
+        feature_columns = ['Close', 'Volume', 'SMA_20', 'SMA_50', 'RSI', 'Volatility', 'Price_Change']
         
         # Remove rows with NaN values
         df_clean = self.data[feature_columns].dropna()
+        
+        if len(df_clean) < self.sequence_length + 10:
+            print(f"❌ Not enough data. Need at least {self.sequence_length + 10} rows, got {len(df_clean)}")
+            return None, None, None, None
         
         # Scale the data
         self.scaler = MinMaxScaler()
@@ -136,6 +134,14 @@ class StockPricePredictor:
     
     def build_lstm_model(self, lstm_units=50, dropout_rate=0.2, num_layers=2):
         """Build LSTM model"""
+        if not TF_AVAILABLE:
+            print("❌ TensorFlow not available. Cannot build model.")
+            return None
+            
+        if self.X_train is None:
+            print("❌ No training data. Run prepare_data() first.")
+            return None
+            
         print("🏗️ Building LSTM model...")
         
         model = Sequential()
@@ -172,13 +178,17 @@ class StockPricePredictor:
         print("✅ Model built successfully!")
         return model
     
-    def train_model(self, epochs=100, batch_size=32, validation_split=0.1):
+    def train_model(self, epochs=50, batch_size=32, validation_split=0.1):
         """Train the LSTM model"""
+        if not TF_AVAILABLE or self.model is None:
+            print("❌ Model not available. Build model first.")
+            return None
+            
         print("🚀 Training model...")
         
         callbacks = [
-            EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
-            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=8, min_lr=1e-6)
+            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
         ]
         
         history = self.model.fit(
@@ -195,6 +205,10 @@ class StockPricePredictor:
     
     def make_predictions(self):
         """Make predictions on test data"""
+        if self.model is None:
+            print("❌ Model not trained. Train model first.")
+            return None, None
+            
         print("🔮 Making predictions...")
         
         # Predict on test data
@@ -202,13 +216,13 @@ class StockPricePredictor:
         
         # Create dummy array for inverse scaling
         dummy_array = np.zeros((len(y_pred_scaled), self.scaler.n_features_in_))
-        dummy_array[:, 3] = y_pred_scaled.flatten()  # Close price is at index 3
-        y_pred = self.scaler.inverse_transform(dummy_array)[:, 3]
+        dummy_array[:, 0] = y_pred_scaled.flatten()  # Close price is at index 0
+        y_pred = self.scaler.inverse_transform(dummy_array)[:, 0]
         
         # Inverse scale actual values
         dummy_array_actual = np.zeros((len(self.y_test), self.scaler.n_features_in_))
-        dummy_array_actual[:, 3] = self.y_test
-        y_actual = self.scaler.inverse_transform(dummy_array_actual)[:, 3]
+        dummy_array_actual[:, 0] = self.y_test
+        y_actual = self.scaler.inverse_transform(dummy_array_actual)[:, 0]
         
         return y_actual, y_pred
     
@@ -237,133 +251,100 @@ class StockPricePredictor:
             'directional_accuracy': directional_accuracy
         }
     
-    def plot_predictions(self, y_actual, y_pred, days_to_show=200):
-        """Plot actual vs predicted prices"""
-        plt.figure(figsize=(15, 8))
+    def plot_data(self, days=100):
+        """Plot recent stock data"""
+        if self.data is None:
+            print("❌ No data to plot. Fetch data first.")
+            return
+            
+        recent_data = self.data.tail(days)
         
-        # Show only last N days for clarity
-        if len(y_actual) > days_to_show:
-            y_actual_plot = y_actual[-days_to_show:]
-            y_pred_plot = y_pred[-days_to_show:]
-        else:
-            y_actual_plot = y_actual
-            y_pred_plot = y_pred
+        plt.figure(figsize=(12, 6))
+        plt.plot(recent_data.index, recent_data['Close'], label='Close Price', linewidth=2)
         
-        plt.plot(y_actual_plot, label='Actual Price', linewidth=2, alpha=0.8)
-        plt.plot(y_pred_plot, label='Predicted Price', linewidth=2, alpha=0.8)
+        if 'SMA_20' in recent_data.columns:
+            plt.plot(recent_data.index, recent_data['SMA_20'], label='SMA 20', alpha=0.7)
+        if 'SMA_50' in recent_data.columns:
+            plt.plot(recent_data.index, recent_data['SMA_50'], label='SMA 50', alpha=0.7)
         
-        plt.title(f'{self.symbol} Stock Price Prediction', fontsize=16, fontweight='bold')
-        plt.xlabel('Time (Days)', fontsize=12)
-        plt.ylabel('Stock Price ($)', fontsize=12)
-        plt.legend(fontsize=12)
+        plt.title(f'{self.symbol} Stock Price - Last {days} Days', fontsize=16, fontweight='bold')
+        plt.xlabel('Date', fontsize=12)
+        plt.ylabel('Price ($)', fontsize=12)
+        plt.legend()
         plt.grid(True, alpha=0.3)
-        
-        # Add metrics as text
-        mse = mean_squared_error(y_actual, y_pred)
-        rmse = np.sqrt(mse)
-        directional_accuracy = np.mean(np.diff(y_actual) > 0 == np.diff(y_pred) > 0)
-        
-        plt.text(0.02, 0.98, f'RMSE: ${rmse:.2f}\nDirectional Accuracy: {directional_accuracy:.1%}',
-                transform=plt.gca().transAxes, fontsize=11,
-                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        
+        plt.xticks(rotation=45)
         plt.tight_layout()
         plt.show()
     
-    def plot_training_history(self, history):
-        """Plot training history"""
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    def get_latest_price(self):
+        """Get the latest stock price"""
+        if self.data is None:
+            self.fetch_data()
         
-        # Loss plot
-        ax1.plot(history.history['loss'], label='Training Loss')
-        ax1.plot(history.history['val_loss'], label='Validation Loss')
-        ax1.set_title('Model Loss')
-        ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('Loss')
-        ax1.legend()
-        ax1.grid(True)
-        
-        # MAE plot
-        ax2.plot(history.history['mae'], label='Training MAE')
-        ax2.plot(history.history['val_mae'], label='Validation MAE')
-        ax2.set_title('Model MAE')
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('MAE')
-        ax2.legend()
-        ax2.grid(True)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def predict_future(self, days=30):
-        """Predict future stock prices"""
-        print(f"🔮 Predicting next {days} days...")
-        
-        # Get the last sequence from training data
-        last_sequence = self.X_test[-1].reshape(1, self.sequence_length, -1)
-        future_predictions = []
-        
-        for _ in range(days):
-            # Predict next value
-            next_pred = self.model.predict(last_sequence, verbose=0)
-            future_predictions.append(next_pred[0, 0])
-            
-            # Update sequence for next prediction
-            # Create new row with predicted value
-            new_row = last_sequence[0, -1].copy()
-            new_row[3] = next_pred[0, 0]  # Update Close price
-            
-            # Shift sequence and add new row
-            last_sequence = np.roll(last_sequence, -1, axis=1)
-            last_sequence[0, -1] = new_row
-        
-        # Inverse scale predictions
-        dummy_array = np.zeros((len(future_predictions), self.scaler.n_features_in_))
-        dummy_array[:, 3] = future_predictions
-        future_prices = self.scaler.inverse_transform(dummy_array)[:, 3]
-        
-        return future_prices
+        if self.data is not None:
+            latest_price = self.data['Close'].iloc[-1]
+            latest_date = self.data.index[-1].date()
+            print(f"📊 {self.symbol} Latest Price: ${latest_price:.2f} (as of {latest_date})")
+            return latest_price, latest_date
+        return None, None
     
     def save_model(self, filepath):
         """Save the trained model"""
-        self.model.save(filepath)
-        print(f"📁 Model saved to {filepath}")
-    
-    def load_model(self, filepath):
-        """Load a saved model"""
-        self.model = tf.keras.models.load_model(filepath)
-        print(f"📁 Model loaded from {filepath}")
+        if self.model is None:
+            print("❌ No model to save.")
+            return False
+            
+        try:
+            self.model.save(filepath)
+            print(f"📁 Model saved to {filepath}")
+            return True
+        except Exception as e:
+            print(f"❌ Error saving model: {e}")
+            return False
 
-# Example usage
+# Example usage and demo
 if __name__ == "__main__":
     print("📈 Stock Price Prediction with LSTM")
     print("=" * 50)
     
     # Initialize predictor
-    predictor = StockPricePredictor(symbol='AAPL', period='5y')
+    predictor = StockPricePredictor(symbol='AAPL', period='2y')
     
-    # Fetch and prepare data
+    # Fetch data
     data = predictor.fetch_data()
+    
     if data is not None:
-        X_train, y_train, X_test, y_test = predictor.prepare_data()
+        # Show latest price
+        predictor.get_latest_price()
         
-        # Build and train model
-        model = predictor.build_lstm_model(lstm_units=100, num_layers=3)
-        history = predictor.train_model(epochs=50, batch_size=32)
+        # Plot recent data
+        print("\n📊 Plotting recent stock data...")
+        predictor.plot_data(days=90)
         
-        # Make predictions and evaluate
-        y_actual, y_pred = predictor.make_predictions()
-        metrics = predictor.calculate_metrics(y_actual, y_pred)
+        # Add technical indicators
+        print("\n🔧 Adding technical indicators...")
+        predictor.add_technical_indicators()
+        print("✅ Technical indicators added!")
         
-        # Plot results
-        predictor.plot_training_history(history)
-        predictor.plot_predictions(y_actual, y_pred)
-        
-        # Predict future prices
-        future_prices = predictor.predict_future(days=30)
-        print(f"\n🔮 Predicted price in 30 days: ${future_prices[-1]:.2f}")
-        
-        # Save model
-        predictor.save_model('stock_prediction_model.h5')
-        
-        print("✅ Stock prediction completed!")
+        if TF_AVAILABLE:
+            # Prepare data for training
+            print("\n📋 Preparing data for training...")
+            X_train, y_train, X_test, y_test = predictor.prepare_data()
+            
+            if X_train is not None:
+                # Build model
+                print("\n🏗️ Building LSTM model...")
+                model = predictor.build_lstm_model(lstm_units=100, num_layers=3)
+                
+                print("\n✅ Stock predictor ready!")
+                print("🚀 Next steps:")
+                print("1. Run predictor.train_model() to train the model")
+                print("2. Run predictor.make_predictions() to get predictions")
+                print("3. Run predictor.calculate_metrics() to evaluate performance")
+            else:
+                print("❌ Failed to prepare data for training")
+        else:
+            print("\n💡 Install TensorFlow to enable model training:")
+            print("pip install tensorflow")
+    else:
+        print("❌ Failed to fetch stock data")
